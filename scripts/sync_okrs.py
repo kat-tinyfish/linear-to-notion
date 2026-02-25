@@ -4,6 +4,9 @@ import json
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 NOTION_OKR_DATABASE_ID = os.environ["NOTION_OKR_DATABASE_ID"]
@@ -40,6 +43,8 @@ def linear_graphql(query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         json={"query": query, "variables": variables},
         timeout=30,
     )
+    if not resp.ok:
+        print(f"Linear API error: {resp.status_code} - {resp.text}")
     resp.raise_for_status()
     data = resp.json()
     if "errors" in data:
@@ -176,13 +181,15 @@ def notion_append_weekly_log_blocks(page_id: str, exec_update: str, project_name
         }
     ]
 
-    payload = {"children": children}
-    r = requests.patch(f"{NOTION_BASE}/blocks/{heading_block_id}/children", headers=notion_headers(), json=payload, timeout=30)
+    payload = {"children": children, "after": heading_block_id}
+    r = requests.patch(f"{NOTION_BASE}/blocks/{page_id}/children", headers=notion_headers(), json=payload, timeout=30)
+    if not r.ok:
+        print(f"Notion append error: {r.status_code} - {r.text}")
     r.raise_for_status()
 
 PROJECT_QUERY = """
 query ProjectBySlug($slug: String!) {
-  projects(filter: { slug: { eq: $slug } }) {
+  projects(filter: { slugId: { eq: $slug } }) {
     nodes {
       id
       name
@@ -190,7 +197,7 @@ query ProjectBySlug($slug: String!) {
       state
       health
       updatedAt
-      projectUpdates(first: 1, orderBy: createdAt, orderDirection: DESC) {
+      projectUpdates(first: 1) {
         nodes { body createdAt user { name } }
       }
     }
@@ -199,7 +206,7 @@ query ProjectBySlug($slug: String!) {
 """
 
 ISSUES_QUERY = """
-query IssuesByProject($projectId: String!, $after: String) {
+query IssuesByProject($projectId: ID!, $after: String) {
   issues(
     filter: { project: { id: { eq: $projectId } } }
     first: 250
@@ -207,10 +214,11 @@ query IssuesByProject($projectId: String!, $after: String) {
     orderBy: updatedAt
   ) {
     nodes {
+      identifier
       title
       url
       updatedAt
-      state { name type }  # type often maps to started/completed/canceled; varies by workspace config
+      state { name type }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -254,19 +262,22 @@ def bucket_issue(state_type: str, state_name: str) -> str:
     # default
     return "other"
 
-def top_titles(issues: List[Dict[str, Any]], n: int = 3) -> List[str]:
-    # issues already pulled orderBy updatedAt DESC, but sort defensively
+def top_titles(issues: List[Dict[str, Any]], n: int = 5) -> List[str]:
     issues_sorted = sorted(issues, key=lambda x: x.get("updatedAt", ""), reverse=True)
-    return [i["title"] for i in issues_sorted[:n]]
+    return [f"{i['identifier']}: {i['title']}" for i in issues_sorted[:n]]
 
 def format_exec_update(project: Dict[str, Any], issues: List[Dict[str, Any]]) -> str:
-    # Most recent project update
+    # Most recent project update (only if within past 7 days)
     updates = project.get("projectUpdates", {}).get("nodes", [])
+    recent = None
     if updates:
         u = updates[0]
-        recent = f"Most recent update: {u['user']['name']} ({u['createdAt']}): {u['body'][:400].replace('\\n', ' ')}"
-    else:
-        recent = "Most recent update: No project update found in Linear."
+        created_str = u['createdAt'][:10]  # "2026-02-20T..." -> "2026-02-20"
+        created_date = dt.date.fromisoformat(created_str)
+        days_ago = (dt.date.today() - created_date).days
+        if days_ago <= 7:
+            body_clean = u['body'][:400].replace('\n', ' ')
+            recent = f"**Most recent update** ({days_ago}d ago, {u['user']['name']}): {body_clean}"
 
     done = []
     in_review = []
@@ -280,24 +291,22 @@ def format_exec_update(project: Dict[str, Any], issues: List[Dict[str, Any]]) ->
         elif bucket == "in_progress":
             in_progress.append(it)
 
-    done_titles = top_titles(done)
-    review_titles = top_titles(in_review)
-    prog_titles = top_titles(in_progress)
-
     lines = []
-    lines.append(recent)
+    
+    if recent:
+        lines.append(recent)
 
-    lines.append(f"Most recently completed (counts): Done={len(done)}; In Review={len(in_review)}")
-    if done_titles:
-        lines.append("Top Done titles: " + "; ".join(done_titles))
-    if review_titles:
-        lines.append("Top In Review titles: " + "; ".join(review_titles))
+    if done or in_review:
+        completed_titles = top_titles(done + in_review)
+        lines.append(f"**Completed/In Review** ({len(done)} done, {len(in_review)} in review): " + "; ".join(completed_titles))
 
-    lines.append(f"Current ongoing work (counts): In Progress={len(in_progress)}")
-    if prog_titles:
-        lines.append("Top In Progress titles: " + "; ".join(prog_titles))
+    if in_progress:
+        prog_titles = top_titles(in_progress)
+        lines.append(f"**In Progress** ({len(in_progress)}): " + "; ".join(prog_titles))
 
-    lines.append(f"Leadership readout: status={project.get('state')}; health={project.get('health')}")
+    health = project.get('health', 'unknown')
+    state = project.get('state', 'unknown')
+    lines.append(f"**Status:** {state}, health: {health}")
 
     return "\n".join(lines)
 
