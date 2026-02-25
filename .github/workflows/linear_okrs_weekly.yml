@@ -24,8 +24,7 @@ jobs:
 
       - name: Run sync
         env:
-          NOTION_TOKEN: $ secrets.NOTION_TOKEN 
-          NOTION_OKR_DATABASE_ID: $ secrets.NOTION_OKR_DATABASE_ID 
-          LINEAR_API_KEY: $ secrets.LINEAR_API_KEY 
-        run: |
-          python scripts/sync_okrs.py
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_OKR_DATABASE_ID: ${{ secrets.NOTION_OKR_DATABASE_ID }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: python scripts/sync_okrs.py
