@@ -2,8 +2,7 @@ name: Weekly Linear → Notion OKR Updates
 
 on:
   schedule:
-    # Mondays at 14:00 UTC (9:00am America/Detroit during standard time)
-    - cron: "0 14 * * 1"
+    - cron: "0 18 * * 2"
   workflow_dispatch: {}
 
 jobs:
@@ -21,7 +20,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests python-dotenv
 
       - name: Run sync
         env:
